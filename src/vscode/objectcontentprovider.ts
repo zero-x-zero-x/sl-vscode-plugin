@@ -29,8 +29,8 @@ export const SL_AUTHORITY = "objects";
 const PERM_MODIFY = 0x4000;
 
 // JSON-RPC error codes used by the viewer
-const JSONRPC_INVALID_PARAMS = -32602;
-const JSONRPC_FORBIDDEN = -32003;
+export const JSONRPC_INVALID_PARAMS = -32602;
+export const JSONRPC_FORBIDDEN = -32003;
 const JSONRPC_TIMEOUT = -32001;
 const JSONRPC_INTERNAL_ERROR = -32603;
 
@@ -38,7 +38,7 @@ const JSONRPC_INTERNAL_ERROR = -32603;
  * Extract JSON-RPC error code from error message.
  * The websocket client formats errors as "JSON-RPC Error {code}: {message}"
  */
-function extractJsonRpcErrorCode(error: Error): number | undefined {
+export function extractJsonRpcErrorCode(error: Error): number | undefined {
     const match = error.message.match(/^JSON-RPC Error (-?\d+):/);
     return match ? parseInt(match[1], 10) : undefined;
 }

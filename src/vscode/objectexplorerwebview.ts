@@ -9,7 +9,7 @@ import { ObjectContentService } from "./objectcontentservice";
 import { PublishedObject } from "./objectcontentinterfaces";
 import { ViewerEditWSClient } from "../viewereditwsclient";
 import { ObjectPinStore } from "./objectpinstore";
-import { displayName } from "./objectcontentprovider";
+import { displayName, extractJsonRpcErrorCode, JSONRPC_INVALID_PARAMS } from "./objectcontentprovider";
 
 interface PinnedObjectView {
     object_id: string;
@@ -37,6 +37,8 @@ export class ObjectExplorerWebviewProvider implements vscode.WebviewViewProvider
     private readonly _disposables: vscode.Disposable[] = [];
     private _connected: boolean;
     private readonly _pinnedUnavailableCache = new Map<string, { reason: "not_found" | "error"; checkedAt: number }>();
+    private _refreshing = false;
+    private _refreshPending = false;
 
     constructor(
         extensionUri: vscode.Uri,
@@ -89,6 +91,26 @@ export class ObjectExplorerWebviewProvider implements vscode.WebviewViewProvider
     }
 
     private async _refresh(): Promise<void> {
+        // Coalesce re-entrant refreshes (e.g. an object.publish notification arriving while a
+        // pinned-object availability check from an earlier refresh is still in flight) into a
+        // single follow-up pass instead of racing two postMessage calls.
+        if (this._refreshing) {
+            this._refreshPending = true;
+            return;
+        }
+        this._refreshing = true;
+        try {
+            await this._doRefresh();
+        } finally {
+            this._refreshing = false;
+            if (this._refreshPending) {
+                this._refreshPending = false;
+                void this._refresh();
+            }
+        }
+    }
+
+    private async _doRefresh(): Promise<void> {
         if (!this._view) { return; }
         const objects: PublishedObject[] = this._service.getObjects().map((e) => e.object);
         const pinRecords = await this._pinStore.loadPins();
@@ -152,19 +174,14 @@ export class ObjectExplorerWebviewProvider implements vscode.WebviewViewProvider
         await Promise.all(toCheck.map(async (pinned) => {
             let reason: "not_found" | "error" = "error";
             try {
-                const response = await client.requestObject({ object_id: pinned.object_id });
-                if (response.object) {
-                    this._service.handlePublish({ object: response.object });
+                await client.requestObject({ object_id: pinned.object_id });
+                const entry = await this._service.waitForObjectPublish(pinned.object_id);
+                if (entry) {
                     this._pinnedUnavailableCache.delete(pinned.object_id);
                     return;
                 }
-
-                if (this._isNotFoundMessage(response.message)) {
-                    reason = "not_found";
-                }
             } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                if (this._isNotFoundMessage(message)) {
+                if (err instanceof Error && extractJsonRpcErrorCode(err) === JSONRPC_INVALID_PARAMS) {
                     reason = "not_found";
                 }
             }
@@ -182,14 +199,6 @@ export class ObjectExplorerWebviewProvider implements vscode.WebviewViewProvider
                 pinned.unavailableReason = cached.reason;
             }
         }
-    }
-
-    private _isNotFoundMessage(message: string | undefined): boolean {
-        if (!message) {
-            return false;
-        }
-        const lower = message.toLowerCase();
-        return lower.includes("not found") || lower.includes("does not exist");
     }
 
     private _updateConnectionState(): void {

@@ -56,7 +56,7 @@ import { HostInterface } from "./interfaces/hostinterface";
 import { SyncedFileDecorator } from "./vscode/SyncedFileDecorator";
 import { ObjectContentChangeEvent, ObjectContentService, ObjectTreeChangeEvent } from "./vscode/objectcontentservice";
 import { ObjectPinStore } from "./vscode/objectpinstore";
-import { SL_SCHEME, SL_AUTHORITY, displayName, itemUri, languageForItem } from "./vscode/objectcontentprovider";
+import { SL_SCHEME, SL_AUTHORITY, displayName, itemUri, languageForItem, extractJsonRpcErrorCode, JSONRPC_INVALID_PARAMS, JSONRPC_FORBIDDEN } from "./vscode/objectcontentprovider";
 
 /** PERM_MODIFY bit from viewer LLPermissions */
 const PERM_MODIFY = 0x4000;
@@ -74,6 +74,20 @@ type ParsedTempFile = {
 
 function isUuidSegment(segment: string): boolean {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(segment);
+}
+
+function describeRequestObjectError(err: unknown): string {
+    if (err instanceof Error) {
+        const code = extractJsonRpcErrorCode(err);
+        if (code === JSONRPC_INVALID_PARAMS) {
+            return "object not found";
+        }
+        if (code === JSONRPC_FORBIDDEN) {
+            return "permission denied";
+        }
+        return err.message;
+    }
+    return String(err);
 }
 
 export class SynchService implements vscode.Disposable {
@@ -1448,14 +1462,10 @@ export class SynchService implements vscode.Disposable {
             }
 
             try {
-                const result = await this.websocket.requestObject({ object_id });
-                if (result.object) {
-                    service.handlePublish({ object: result.object });
-                } else if (result.success === false) {
-                    logDebug(`[requestWorkspaceObjects] viewer rejected ${object_id}: ${result.message ?? "unknown"}`);
-                }
+                // The object itself arrives separately via the object.publish notification.
+                await this.websocket.requestObject({ object_id });
             } catch (err) {
-                logDebug(`[requestWorkspaceObjects] error requesting ${object_id}: ${err}`);
+                logDebug(`[requestWorkspaceObjects] viewer rejected ${object_id}: ${describeRequestObjectError(err)}`);
             }
         }
     }
@@ -1475,21 +1485,15 @@ export class SynchService implements vscode.Disposable {
             }
 
             try {
-                const result = await this.websocket.requestObject({ object_id });
-                if (result.object) {
-                    service.handlePublish({ object: result.object });
-                    logDebug(`[restorePinnedObjects] restored ${result.object.object_id} (${result.object.object_name})`);
-                } else if (result.success === false) {
-                    logDebug(
-                        `[restorePinnedObjects] viewer rejected ${object_id}: ${result.message ?? "unknown"}`
-                    );
+                await this.websocket.requestObject({ object_id });
+                const entry = await service.waitForObjectPublish(object_id);
+                if (entry) {
+                    logDebug(`[restorePinnedObjects] restored ${entry.object.object_id} (${entry.object.object_name})`);
                 } else {
-                    logDebug(
-                        `[restorePinnedObjects] no object payload returned for ${object_id}`
-                    );
+                    logDebug(`[restorePinnedObjects] accepted but object.publish never arrived for ${object_id}`);
                 }
             } catch (err) {
-                logDebug(`[restorePinnedObjects] error requesting ${object_id}: ${err}`);
+                logDebug(`[restorePinnedObjects] viewer rejected ${object_id}: ${describeRequestObjectError(err)}`);
             }
         }
     }
@@ -1505,16 +1509,16 @@ export class SynchService implements vscode.Disposable {
             // scriptId, when provided, is the inventory item_id — open via sl:// virtual FS.
             let publishedObject: PublishedObject | undefined;
 
-            const result = await this.websocket.requestObject({ object_id: objectId });
-            if (result.object) {
-                logDebug(`[object.request] response contained object_id=${result.object.object_id}`);
-                ObjectContentService.getInstance().handlePublish({ object: result.object });
-                publishedObject = result.object;
-            } else if (result.success === false) {
-                showWarningMessage(`Failed to request object: ${result.message ?? "unknown error"}`);
-            } else {
-                // Keep this visible while we support mixed viewer versions.
-                logDebug("[object.request] response contained no object payload; waiting for object.publish notification");
+            try {
+                await this.websocket.requestObject({ object_id: objectId });
+                const entry = await ObjectContentService.getInstance().waitForObjectPublish(objectId);
+                if (entry) {
+                    publishedObject = entry.object;
+                } else {
+                    showWarningMessage(`Timed out waiting for object ${objectId} to publish`);
+                }
+            } catch (err) {
+                showWarningMessage(`Failed to request object: ${describeRequestObjectError(err)}`);
             }
 
             if (scriptId && publishedObject) {

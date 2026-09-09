@@ -248,11 +248,9 @@ export interface ObjectRequestParams {
     object_id: string;   // UUID of the root prim to request publishing for
 }
 
-/** object.request response */
+/** object.request response — the object itself always arrives later via the object.publish notification */
 export interface ObjectRequestResponse {
-    object?: PublishedObject; // Primary response payload for requested object
-    success?: boolean;        // Legacy compatibility for older viewers
-    message?: string;         // reason on failure (e.g. "object not found", "permission denied")
+    success: boolean;
 }
 
 /** object.list response */
