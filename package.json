@@ -86,6 +86,11 @@
         "category": "Second Life"
       },
       {
+        "command": "slVscodeEdit.autoLinkObject",
+        "title": "Link All",
+        "category": "Second Life"
+      },
+      {
         "command": "slVscodeEdit.renameInventoryItem",
         "title": "Rename...",
         "category": "Second Life"
@@ -210,6 +215,11 @@
           "group": "7_modification"
         },
         {
+          "command": "slVscodeEdit.autoLinkObject",
+          "when": "view == slInworldExplorer && viewItem == slObject",
+          "group": "navigation"
+        },
+        {
           "command": "slVscodeEdit.teleportToObject",
           "when": "view == slInworldExplorer && viewItem == slObject",
           "group": "navigation"
@@ -305,6 +315,11 @@
             "type": "boolean",
             "default": true,
             "description": "Should the viewers tempfile be kept open while editing"
+          },
+          "slVscodeEdit.sync.autoLinkOnPublish": {
+            "type": "boolean",
+            "default": false,
+            "description": "Automatically link matching workspace files when an object is first published"
           },
           "slVscodeEdit.sync.notecardComment": {
             "type": "string",
