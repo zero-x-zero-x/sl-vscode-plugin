@@ -20,6 +20,7 @@ import {
     RuntimeDebug,
     RuntimeError,
 } from "./viewereditwsclient";
+import { JSONRPCError } from "./websockclient";
 import {
     ObjectPublishMessage,
     ObjectUnpublishMessage,
@@ -149,13 +150,13 @@ export class SynchService implements vscode.Disposable {
             async (params) => {
                 if (typeof params.message !== "string")
                 {
-                    throw new Error("message must be a string");
+                    throw new JSONRPCError(-32602, "message must be a string");
                 }
 
                 const level = params.level ?? "info";
                 if (level !== "info" && level !== "warn" && level !== "error")
                 {
-                    throw new Error("level must be one of: info, warn, error");
+                    throw new JSONRPCError(-32602, "level must be one of: info, warn, error");
                 }
 
                 if (level === "warn")

@@ -242,7 +242,7 @@ export class ObjectExplorerWebviewProvider implements vscode.WebviewViewProvider
         try {
             const response = await socket.executeCommand({ command, params });
             if (!response.success) {
-                vscode.window.showErrorMessage(response.message ?? failureMessage);
+                vscode.window.showErrorMessage(failureMessage);
                 return;
             }
             if (successMessage) {

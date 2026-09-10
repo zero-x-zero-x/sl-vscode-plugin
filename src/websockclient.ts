@@ -107,6 +107,17 @@ const JSONRPCErrorCodes = {
     SERVER_ERROR: -32000, // -32000 to -32099 are reserved for implementation-defined server errors
 } as const;
 
+export class JSONRPCError extends Error {
+    constructor(
+        public readonly code: number,
+        message: string,
+        public readonly data?: unknown,
+    ) {
+        super(message);
+        this.name = "JSONRPCError";
+    }
+}
+
 export interface JSONRPCInterface {
     // Connection / lifecycle (inherited from base WebSocket client)
     isConnected(): boolean;
@@ -618,9 +629,9 @@ export class JSONRPCClient extends WebsockClient implements JSONRPCInterface {
                 console.error(`Error in request handler for ${request.method}:`, error);
                 this.respondWithJSONRPCError(
                     requestId,
-                    -32603,
-                    "Internal error",
+                    error instanceof JSONRPCError ? error.code : JSONRPCErrorCodes.INTERNAL_ERROR,
                     error instanceof Error ? error.message : String(error),
+                    error instanceof JSONRPCError ? error.data : undefined,
                 );
             }
             return;

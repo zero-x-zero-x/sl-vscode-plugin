@@ -3,7 +3,7 @@
  * Copyright (C) 2025, Linden Research, Inc.
  */
 import * as vscode from "vscode";
-import { JSONRPCClient } from "./websockclient";
+import { JSONRPCClient, JSONRPCError } from "./websockclient";
 import { ConfigService } from "./configservice";
 import { ConfigKey } from "./interfaces/configinterface";
 import { showStatusMessage } from "./utils";
@@ -129,15 +129,6 @@ export interface CommandExecuteParams {
 export interface CommandExecuteResponse {
     success: boolean;
     result?: unknown;
-    error_code?: CommandErrorCode;
-    message?: string;
-}
-
-export const enum CommandErrorCode {
-    UnknownCommand  = 1,
-    InvalidParams   = 2,
-    NotPermitted    = 3,
-    ExecutionError  = 4,
 }
 
 export interface CommandParamInfo {
@@ -411,7 +402,7 @@ export class ViewerEditWSClient implements vscode.Disposable {
             if (this.handlers.onCommandExecute) {
                 return this.handlers.onCommandExecute(params);
             }
-            return Promise.resolve({ success: false, error_code: CommandErrorCode.UnknownCommand, message: "Unknown command" });
+            return Promise.reject(new JSONRPCError(-32602, "Unknown command"));
         });
 
         this.transport.on("command.list", (): CommandListResponse => {
