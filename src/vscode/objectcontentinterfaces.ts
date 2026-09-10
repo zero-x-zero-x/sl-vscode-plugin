@@ -62,6 +62,7 @@ export interface LinkedObject {
     link_number: number;       // Link number (2+ = children; root is 1)
     link_name: string;         // Display name of the linked prim
     link_description?: string;
+    permissions?: ObjectPermissions;   // Actual permissions for this linked prim
     inventory: ObjectInventoryItem[];
 }
 
@@ -247,11 +248,9 @@ export interface ObjectRequestParams {
     object_id: string;   // UUID of the root prim to request publishing for
 }
 
-/** object.request response */
+/** object.request response — the object itself always arrives later via the object.publish notification */
 export interface ObjectRequestResponse {
-    object?: PublishedObject; // Primary response payload for requested object
-    success?: boolean;        // Legacy compatibility for older viewers
-    message?: string;         // reason on failure (e.g. "object not found", "permission denied")
+    success: boolean;
 }
 
 /** object.list response */
