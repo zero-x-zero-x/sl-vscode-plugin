@@ -1142,9 +1142,7 @@ function showObjectMenu(anchor: MenuAnchor, objectEl: HTMLElement): void {
     }
 
     const object_id = objectEl.dataset["objectId"]!;
-    const objectEntry = state.objects.find((obj) => obj.object_id === object_id);
-    const hasScripts = objectEntry?.inventory.some((item) => item.type === "script") ?? false;
-    const resetAllAvailable = viewerCommands.has("viewer.script.reset_all");
+    const hasScripts = (objectEntry?.inventory.some((item) => item.type === "script") ?? false) || (objectEntry?.linked_objects?.some((lo) => lo.inventory.some((item) => item.type === "script")) ?? false);
     const recompileAllAvailable = viewerCommands.has("viewer.script.recompile_all");
     const canSaveBack = objectEntry?.can_save_back === true;
     const saveBackCommandAvailable = viewerCommands.has("viewer.object.save_back_to_contents");
@@ -1246,8 +1244,8 @@ function showPrimMenu(anchor: MenuAnchor, primEl: HTMLElement): void {
         {
             label: "Reset All Scripts",
             disabled: !resetAllAvailable || !hasScripts,
-            action: () => vscode.postMessage({ command: "resetAllScripts", payload: { object_id: prim_id } }),
-        },
+            action: () => vscode.postMessage({ command: "resetAllScripts", payload: { object_id } }),
+        }
         {
             label: "Recompile All",
             disabled: !recompileAllAvailable || !hasScripts,
