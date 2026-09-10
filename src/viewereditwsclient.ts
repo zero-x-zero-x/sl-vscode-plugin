@@ -51,7 +51,7 @@ export interface SessionHandshake {
 
 export interface SessionHandshakeResponse {
     client_name: string;
-    client_version: "1.0";
+    client_version: string;
     protocol_version: string;
     languages: string[];
     features: { [feature: string]: boolean };
