@@ -130,6 +130,50 @@ export class SynchService implements vscode.Disposable {
         this.context = context;
         this.host = new VSCodeHost();
         this.syncedFileDecorator = new SyncedFileDecorator(this);
+        this.commandRegistry.register(
+            {
+                command: "editor.show_message",
+                description: "Show a notification in the editor.",
+                params: {
+                    message: {
+                        type: "string",
+                        required: true,
+                        description: "Notification text.",
+                    },
+                    level: {
+                        type: "string",
+                        description: "Notification level: info, warn, or error.",
+                    },
+                },
+            },
+            async (params) => {
+                if (typeof params.message !== "string")
+                {
+                    throw new Error("message must be a string");
+                }
+
+                const level = params.level ?? "info";
+                if (level !== "info" && level !== "warn" && level !== "error")
+                {
+                    throw new Error("level must be one of: info, warn, error");
+                }
+
+                if (level === "warn")
+                {
+                    await showWarningMessage(params.message);
+                }
+                else if (level === "error")
+                {
+                    await vscode.window.showErrorMessage(params.message);
+                }
+                else
+                {
+                    await showInfoMessage(params.message);
+                }
+
+                return { success: true };
+            },
+        );
         // Note: _onDidChangeConnectionState is NOT added to disposables
         // because it must survive activate/deactivate cycles
     }
