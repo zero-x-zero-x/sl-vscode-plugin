@@ -73,6 +73,21 @@ type ParsedTempFile = {
     itemId?: string;
 };
 
+interface SlLinkResult {
+    outcome: "linked" | "already-linked" | "no-match" | "skipped-no-modify" | "error";
+    masterUri?: vscode.Uri;
+    mismatch?: boolean;
+}
+
+interface AutoLinkSummary {
+    linked: number;
+    alreadyLinked: number;
+    noMatch: number;
+    skippedNoModify: number;
+    errors: number;
+    mismatches: number;
+}
+
 function isUuidSegment(segment: string): boolean {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(segment);
 }
@@ -107,6 +122,7 @@ export class SynchService implements vscode.Disposable {
     private initialGenerationDone: boolean = false;
     private pendingLaunchObjectId?: string;
     private pendingLaunchScriptId?: string;
+    private autoLinkedObjectIds = new Set<string>();
 
     public viewerName?: string;
     public viewerVersion?: string;
@@ -330,7 +346,7 @@ export class SynchService implements vscode.Disposable {
         }
 
         // Look for a file in the workspace with the same name as the master script
-        let masterUri = await SynchService.findMasterFile(parsed, viewerDocument);
+        let masterUri = await SynchService.findMasterFile(parsed, viewerDocument.getText());
         let masterFound = true;
         if (!masterUri) {
             masterFound = false;
@@ -428,17 +444,33 @@ export class SynchService implements vscode.Disposable {
     private async setupSyncForSlUri(
         slDocument: vscode.TextDocument,
     ): Promise<void> {
+        await this.linkSlItem(
+            slDocument.uri,
+            slDocument.getText(),
+            { reveal: true },
+            slDocument,
+        );
+    }
+
+    private async linkSlItem(
+        uri: vscode.Uri,
+        content: string,
+        options: { reveal: boolean },
+        viewerDocument?: vscode.TextDocument,
+    ): Promise<SlLinkResult> {
         if (!hasWorkspace()) {
-            return;
+            return { outcome: "error" };
         }
         if (!this.websocket?.isConnected()) {
-            showWarningMessage(`Cannot link sl:// script: not connected to Second Life viewer.`);
-            return;
+            if (options.reveal) {
+                showWarningMessage(`Cannot link sl:// script: not connected to Second Life viewer.`);
+            }
+            return { outcome: "error" };
         }
-        const parsed = SynchService.parseSlFileInfo(slDocument.uri);
+        const parsed = SynchService.parseSlFileInfo(uri);
         if (!parsed) {
-            logInfo(`[setupSyncForSlUri] Could not parse sl:// URI: ${slDocument.uri.toString()}`);
-            return;
+            logInfo(`[setupSyncForSlUri] Could not parse sl:// URI: ${uri.toString()}`);
+            return { outcome: "error" };
         }
         // Skip filesystem linking for no-modify items (they can still be viewed but not synced)
         const canModify = !parsed.item?.permissions || (parsed.item.permissions.owner & PERM_MODIFY) !== 0;
@@ -446,25 +478,26 @@ export class SynchService implements vscode.Disposable {
             logInfo(
                 `[setupSyncForSlUri] Skipping filesystem link for no-modify item "${parsed.scriptName}.${parsed.extension}"`,
             );
-            return;
+            return { outcome: "skipped-no-modify" };
         }
-        const masterUri = await SynchService.findMasterFile(parsed, slDocument);
+        const masterUri = await SynchService.findMasterFile(parsed, content);
         if (!masterUri) {
             logInfo(
                 `[setupSyncForSlUri] No master found for "${parsed.scriptName}.${parsed.extension}"; ` +
                 `editing directly via viewer.`,
             );
-            return;
+            return { outcome: "no-match" };
         }
-        const masterEditor = await SynchService.openMasterScript(masterUri);
-        const sync = await this.getOrCreateSync(masterEditor.document, parsed.language);
-        // openTextDocument guarantees readFile has completed for virtual fs documents
-        const loadedDoc = await vscode.workspace.openTextDocument(slDocument.uri);
+        const masterDoc = await vscode.workspace.openTextDocument(masterUri);
+        const masterEditor = options.reveal
+            ? await vscode.window.showTextDocument(masterDoc, { preview: false })
+            : undefined;
+        const sync = await this.getOrCreateSync(masterDoc, parsed.language);
         if (!parsed.rootId || !parsed.itemId) {
             logInfo(
-                `[setupSyncForSlUri] Missing canonical identity for "${slDocument.uri.toString()}"`,
+                `[setupSyncForSlUri] Missing canonical identity for "${uri.toString()}"`,
             );
-            return;
+            return { outcome: "error" };
         }
 
         const identity: ScriptIdentity = {
@@ -472,20 +505,130 @@ export class SynchService implements vscode.Disposable {
             primId: parsed.primId ?? null,
             itemId: parsed.itemId,
         };
+        const existingSync = [...this.activeSyncs.values()]
+            .find((sync) => sync.isTrackingIdentity(identity));
+        if (existingSync) {
+            return {
+                outcome: "already-linked",
+                masterUri: existingSync.getMasterUri(),
+            };
+        }
+
         sync.subscribeVirtual(
-            slDocument.uri,
-            loadedDoc.getText(),
+            uri,
+            content,
             identity,
             parsed.item,
         );
-        SynchService.checkAndUpdateMasterDocumentInBackground(masterEditor, slDocument);
-        this.syncedFileDecorator.refresh(masterEditor.document.uri);
+        const mismatch = masterDoc.getText() !== content;
+        if (masterEditor && viewerDocument) {
+            SynchService.checkAndUpdateMasterDocumentInBackground(masterEditor, viewerDocument);
+        }
+        this.syncedFileDecorator.refresh(masterDoc.uri);
         logInfo(
             `[setupSyncForSlUri] Linked "${parsed.scriptName}" ` +
-            `(${slDocument.uri.toString()}) \u2192 ${masterUri.fsPath}`,
+            `(${uri.toString()}) \u2192 ${masterUri.fsPath}`,
         );
         // Do NOT call setupConnection() — already connected
         // Do NOT call sendSyncSubscription() — sl:// content travels via object.content.save
+        return { outcome: "linked", masterUri, mismatch };
+    }
+
+    public async autoLinkObject(objectId: string): Promise<AutoLinkSummary> {
+        const summary: AutoLinkSummary = {
+            linked: 0,
+            alreadyLinked: 0,
+            noMatch: 0,
+            skippedNoModify: 0,
+            errors: 0,
+            mismatches: 0,
+        };
+        const entry = ObjectContentService.getInstance().getObject(objectId);
+        if (!entry) {
+            summary.errors++;
+            return summary;
+        }
+
+        const items = [
+            {
+                primId: objectId,
+                items: entry.object.inventory ?? [],
+            },
+            ...(entry.object.linked_objects ?? []).map((linked) => ({
+                primId: linked.link_id,
+                items: linked.inventory ?? [],
+            })),
+        ].flatMap(({ primId, items: inventory }) =>
+            inventory.map((item) => ({ primId, item })),
+        );
+
+        await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: `Linking files in ${entry.object.object_name}`,
+                cancellable: true,
+            },
+            async (progress, token) => {
+                for (let index = 0; index < items.length; index++) {
+                    if (token.isCancellationRequested) {
+                        break;
+                    }
+
+                    const { primId, item } = items[index];
+                    const uri = itemUri(objectId, primId, item.item_id);
+                    progress.report({
+                        message: `${index + 1}/${items.length}: ${displayName(item)}`,
+                        increment: items.length > 0 ? 100 / items.length : 100,
+                    });
+
+                    try {
+                        const content = Buffer.from(
+                            await vscode.workspace.fs.readFile(uri),
+                        ).toString("utf-8");
+                        const result = await this.linkSlItem(
+                            uri,
+                            content,
+                            { reveal: false },
+                        );
+
+                        switch (result.outcome) {
+                            case "linked":
+                                summary.linked++;
+                                if (result.mismatch) {
+                                    summary.mismatches++;
+                                }
+                                break;
+                            case "already-linked":
+                                summary.alreadyLinked++;
+                                break;
+                            case "no-match":
+                                summary.noMatch++;
+                                break;
+                            case "skipped-no-modify":
+                                summary.skippedNoModify++;
+                                break;
+                            case "error":
+                                summary.errors++;
+                                break;
+                        }
+                    } catch (error) {
+                        summary.errors++;
+                        logWarning(
+                            `[autoLinkObject] Failed to link ${displayName(item)}: ` +
+                            `${error instanceof Error ? error.message : String(error)}`,
+                        );
+                    }
+                }
+            },
+        );
+
+        await showInfoMessage(
+            `Auto-link complete for ${entry.object.object_name}: ` +
+            `${summary.linked} linked, ${summary.alreadyLinked} already linked, ` +
+            `${summary.noMatch} not matched, ${summary.skippedNoModify} skipped ` +
+            `(no modify), ${summary.errors} errors, ${summary.mismatches} differing.`,
+        );
+        return summary;
     }
 
     public removeSync(filePath: string): void {
@@ -545,7 +688,20 @@ export class SynchService implements vscode.Disposable {
             onRuntimeError: (message: RuntimeError): any => this.onRuntimeError(message),
             onObjectPublish: (msg: ObjectPublishMessage): any => {
                 logDebug(`[object.publish] object_id=${msg.object.object_id}`);
-                ObjectContentService.getInstance().handlePublish(msg);
+                const service = ObjectContentService.getInstance();
+                service.handlePublish(msg);
+
+                const autoLinkEnabled = ConfigService.getInstance()
+                    .getConfig<boolean>(ConfigKey.AutoLinkOnPublish, false);
+                const objectId = msg.object.object_id;
+                if (
+                    autoLinkEnabled &&
+                    hasWorkspace() &&
+                    !this.autoLinkedObjectIds.has(objectId)
+                ) {
+                    this.autoLinkedObjectIds.add(objectId);
+                    void this.autoLinkObject(objectId);
+                }
             },
             onObjectUnpublish: (msg: ObjectUnpublishMessage): any => {
                 logDebug(`[object.unpublish] object_id=${msg.object_id}`);
@@ -722,6 +878,7 @@ export class SynchService implements vscode.Disposable {
         // All cleanup happens here - fires for both graceful and crash disconnects
         console.log("[SynchService] Connection closed");
         this.websocket?.stopPingTimer();
+        this.autoLinkedObjectIds.clear();
 
         if (this.handshakeResolve) {
             this.handshakeResolve(false, "Connection closed");
@@ -1066,7 +1223,16 @@ export class SynchService implements vscode.Disposable {
         const di = fullName.lastIndexOf('.');
         if (di < 0) {
             if(item.type == "notecard") {
-                return {scriptName: item.name, scriptId: uri.toString(), extension: "txt", language: "txt", item};
+                return {
+                    scriptName: item.name,
+                    scriptId: uri.toString(),
+                    extension: "txt",
+                    language: "txt",
+                    item,
+                    rootId: root_id,
+                    primId: prim_id,
+                    itemId: item.item_id,
+                };
             }
             return null;
         }
@@ -1134,10 +1300,10 @@ export class SynchService implements vscode.Disposable {
 
     private static async findMasterFile(
         script: ParsedTempFile,
-        viewerFile: vscode.TextDocument
+        content: string
     ): Promise<vscode.Uri | null> {
         // Attempt to match by file meta info
-        const metaMatch = await SynchService.findMasterFileByMetaComment(script, viewerFile);
+        const metaMatch = await SynchService.findMasterFileByMetaComment(script, content);
         if(metaMatch) return metaMatch;
 
         let files = await vscode.workspace.findFiles(`**/${script.scriptName}.${script.extension}`);
@@ -1229,7 +1395,7 @@ export class SynchService implements vscode.Disposable {
 
     private static async findMasterFileByMetaComment(
         script: ParsedTempFile,
-        viewerFile: vscode.TextDocument
+        content: string
     ) : Promise<vscode.Uri | null> {
         const config =  ConfigService.getInstance()
 
@@ -1238,8 +1404,7 @@ export class SynchService implements vscode.Disposable {
         if(cmt.length < 1) return null;
 
         const lineRegExp = new RegExp(`^[\\s]*${cmt}[\\s]*@file[\\s]+.*$`, "i");
-        const range = new vscode.Range(0, 0, 10, 0);
-        const lines = viewerFile.getText(range).split("\n");
+        const lines = content.split("\n").slice(0, 10);
         const start = lines.filter(line => line.match(lineRegExp))[0] ?? null;
         if (start) {
             const pathPart = start.split("@file")[1]?.trim() ?? "";

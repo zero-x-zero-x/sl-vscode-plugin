@@ -1159,6 +1159,13 @@ function showObjectMenu(anchor: MenuAnchor, objectEl: HTMLElement): void {
             label: "New File...",
             action: () => beginCreateItem(object_id, object_id),
         },
+        {
+            label: "Link All",
+            action: () => vscode.postMessage({
+                command: "autoLinkObject",
+                payload: { object_id },
+            }),
+        },
         { separator: true },
         {
             label: "Unexplore",
